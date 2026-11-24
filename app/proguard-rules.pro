@@ -1,0 +1,3 @@
+-keep class com.panframe.camera.model.** { *; }
+-keepattributes *Annotation*, InnerClasses
+-dontnote kotlinx.serialization.AnnotationsKt
