@@ -98,7 +98,6 @@ fun PanFrameApp() {
 
     var isLandscapePhone by remember { mutableStateOf(false) }
     var phoneSurfaceRotation by remember { mutableStateOf(Surface.ROTATION_0) }
-    var phoneSurfaceRotation by remember { mutableStateOf(Surface.ROTATION_0) }
     var isRecording by remember { mutableStateOf(false) }
     var lockedLandscape by remember { mutableStateOf(false) }
     var recSeconds by remember { mutableStateOf(0L) }
