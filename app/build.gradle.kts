@@ -10,7 +10,7 @@ android {
 
     defaultConfig {
         applicationId = "com.panframe.camera"
-        minSdk = 26
+        minSdk = 29
         targetSdk = 35
         versionCode = 1
         versionName = "1.0.0"
@@ -66,7 +66,8 @@ dependencies {
     implementation("androidx.compose.ui:ui")
     implementation("androidx.compose.ui:ui-graphics")
     implementation("androidx.compose.material3:material3")
-    implementation("androidx.compose.material:material-icons-extended")
+
+    implementation("androidx.concurrent:concurrent-futures-ktx:1.1.0")
 
     // CameraX (2-stream safe UHD/FHD pipeline + Camera2 Interop for 30fps lock)
     val cameraVersion = "1.3.4"

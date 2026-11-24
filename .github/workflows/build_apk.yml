@@ -8,6 +8,11 @@ on:
 jobs:
   build:
     runs-on: ubuntu-latest
+    env:
+      KS_B64: ${{ secrets.KEYSTORE_BASE64 }}
+      SIGNING_STORE_PASSWORD: ${{ secrets.SIGNING_STORE_PASSWORD }}
+      SIGNING_KEY_ALIAS: ${{ secrets.SIGNING_KEY_ALIAS }}
+      SIGNING_KEY_PASSWORD: ${{ secrets.SIGNING_KEY_PASSWORD }}
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -22,6 +27,12 @@ jobs:
         uses: gradle/actions/setup-gradle@v4
         with:
           gradle-version: '8.7'
+
+      # Optional: stable signing key so new APKs install OVER old ones.
+      # Add repo secrets KEYSTORE_BASE64, SIGNING_STORE_PASSWORD, SIGNING_KEY_ALIAS, SIGNING_KEY_PASSWORD.
+      - name: Restore keystore (if secret set)
+        if: env.KS_B64 != ''
+        run: echo "$KS_B64" | base64 -d > app/keystore.jks
 
       - name: Build Debug APK
         run: gradle assembleDebug --stacktrace
