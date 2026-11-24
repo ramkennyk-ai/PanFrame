@@ -53,8 +53,11 @@ class PanExportService : Service() {
         }
         if (intent?.action == ACTION_RESUME_QUEUE) isCameraBusy = false
         scope.launch {
-            delay(600L)
-            processNextIfIdle()
+            delay(700L)
+            runCatching { processNextIfIdle() }.onFailure { err ->
+                Toast.makeText(applicationContext, "Export init error: ${err.message}", Toast.LENGTH_LONG).show()
+                stopSelfSafe()
+            }
         }
         return START_NOT_STICKY
     }
@@ -63,8 +66,7 @@ class PanExportService : Service() {
         if (activeTransformer != null || isCameraBusy) return
         val nextPath = queue.poll() ?: run {
             updateState(exporting = false)
-            stopForeground(STOP_FOREGROUND_REMOVE)
-            stopSelf()
+            stopSelfSafe()
             return
         }
         val sidecar = runCatching {
@@ -74,8 +76,8 @@ class PanExportService : Service() {
         updateState(exporting = true)
         startForegroundSafe("Rendering Shorts/Box video...")
 
-        val retriever = MediaMetadataRetriever()
         var fixDeg = 0f
+        val retriever = MediaMetadataRetriever()
         runCatching {
             retriever.setDataSource(sidecar.rawVideoPath)
             val w = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_VIDEO_WIDTH)?.toIntOrNull() ?: 0
@@ -108,7 +110,7 @@ class PanExportService : Service() {
                         val saved = saveToMovies(tempOut, suffix)
                         tempOut.delete()
                         withContext(Dispatchers.Main) {
-                            Toast.makeText(this@PanExportService, "Saved Box Video: $saved", Toast.LENGTH_LONG).show()
+                            Toast.makeText(applicationContext, "Saved Box Video: $saved", Toast.LENGTH_LONG).show()
                             _status.value = _status.value.copy(lastFinishedName = saved, lastError = null)
                             processNextIfIdle()
                         }
@@ -118,7 +120,7 @@ class PanExportService : Service() {
                     activeTransformer = null
                     tempOut.delete()
                     val msg = e.localizedMessage ?: "Codec error"
-                    Toast.makeText(this@PanExportService, "Box Export Error: $msg", Toast.LENGTH_LONG).show()
+                    Toast.makeText(applicationContext, "Box Export Error: $msg", Toast.LENGTH_LONG).show()
                     _status.value = _status.value.copy(lastError = msg)
                     processNextIfIdle()
                 }
@@ -146,7 +148,7 @@ class PanExportService : Service() {
             contentResolver.update(uri, values, null, null)
         }
         val pubPath = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_MOVIES).absolutePath + "/PanFrame/$fileName"
-        MediaScannerConnection.scanFile(this, arrayOf(pubPath), arrayOf("video/mp4"), null)
+        runCatching { MediaScannerConnection.scanFile(this, arrayOf(pubPath), arrayOf("video/mp4"), null) }
         return fileName
     }
 
@@ -154,22 +156,29 @@ class PanExportService : Service() {
         _status.value = _status.value.copy(pendingCount = queue.size + (if (exporting) 1 else 0), isExporting = exporting)
     }
 
+    private fun stopSelfSafe() {
+        runCatching { stopForeground(STOP_FOREGROUND_REMOVE) }
+        runCatching { stopSelf() }
+    }
+
     private fun startForegroundSafe(text: String) {
-        val channelId = "panframe_export"
-        val nm = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            nm.createNotificationChannel(NotificationChannel(channelId, "PanFrame Exports", NotificationManager.IMPORTANCE_LOW))
-        }
-        val notif = NotificationCompat.Builder(this, channelId)
-            .setSmallIcon(android.R.drawable.ic_menu_camera)
-            .setContentTitle("PanFrame Dual Video")
-            .setContentText(text)
-            .setOngoing(true)
-            .build()
-        if (Build.VERSION.SDK_INT >= 34) {
-            startForeground(101, notif, ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PROCESSING)
-        } else {
-            startForeground(101, notif)
+        runCatching {
+            val channelId = "panframe_export"
+            val nm = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                nm.createNotificationChannel(NotificationChannel(channelId, "PanFrame Exports", NotificationManager.IMPORTANCE_LOW))
+            }
+            val notif = NotificationCompat.Builder(this, channelId)
+                .setSmallIcon(android.R.drawable.ic_menu_camera)
+                .setContentTitle("PanFrame Dual Video")
+                .setContentText(text)
+                .setOngoing(true)
+                .build()
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                startForeground(101, notif, ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC)
+            } else {
+                startForeground(101, notif)
+            }
         }
     }
 
@@ -184,15 +193,21 @@ class PanExportService : Service() {
         val status = _status.asStateFlow()
 
         fun enqueue(context: Context, sidecarPath: String) {
-            val i = Intent(context, PanExportService::class.java).putExtra(EXTRA_SIDECAR_PATH, sidecarPath)
-            androidx.core.content.ContextCompat.startForegroundService(context, i)
+            runCatching {
+                val i = Intent(context, PanExportService::class.java).putExtra(EXTRA_SIDECAR_PATH, sidecarPath)
+                androidx.core.content.ContextCompat.startForegroundService(context, i)
+            }.onFailure { err ->
+                Toast.makeText(context.applicationContext, "Queue error: ${err.message}", Toast.LENGTH_LONG).show()
+            }
         }
 
         fun setCameraBusy(context: Context, busy: Boolean) {
             isCameraBusy = busy
             if (!busy && queue.isNotEmpty()) {
-                val i = Intent(context, PanExportService::class.java).setAction(ACTION_RESUME_QUEUE)
-                androidx.core.content.ContextCompat.startForegroundService(context, i)
+                runCatching {
+                    val i = Intent(context, PanExportService::class.java).setAction(ACTION_RESUME_QUEUE)
+                    androidx.core.content.ContextCompat.startForegroundService(context, i)
+                }
             }
         }
     }
