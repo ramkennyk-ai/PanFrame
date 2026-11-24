@@ -17,7 +17,21 @@ android {
         vectorDrawables { useSupportLibrary = true }
     }
 
+    signingConfigs {
+        create("permanent") {
+            val ks = file("keystore.jks")
+            if (ks.exists()) {
+                storeFile = ks
+                storePassword = System.getenv("SIGNING_STORE_PASSWORD")
+                keyAlias = System.getenv("SIGNING_KEY_ALIAS")
+                keyPassword = System.getenv("SIGNING_KEY_PASSWORD")
+            }
+        }
+    }
     buildTypes {
+        debug {
+            if (file("keystore.jks").exists()) signingConfig = signingConfigs.getByName("permanent")
+        }
         release {
             isMinifyEnabled = true
             proguardFiles(

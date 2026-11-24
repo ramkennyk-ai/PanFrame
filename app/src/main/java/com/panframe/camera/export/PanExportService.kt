@@ -7,21 +7,20 @@ import android.content.ContentValues
 import android.content.Context
 import android.content.Intent
 import android.content.pm.ServiceInfo
-import android.graphics.Matrix
+import android.media.MediaMetadataRetriever
+import android.media.MediaScannerConnection
+import android.net.Uri
 import android.os.Build
 import android.os.Environment
 import android.os.IBinder
 import android.provider.MediaStore
+import android.widget.Toast
 import androidx.annotation.OptIn
 import androidx.core.app.NotificationCompat
-import androidx.media3.common.Effect
 import androidx.media3.common.MediaItem
 import androidx.media3.common.MimeTypes
-import androidx.media3.common.util.Size
 import androidx.media3.common.util.UnstableApi
-import androidx.media3.effect.MatrixTransformation
 import androidx.media3.transformer.*
-import com.panframe.camera.model.BoxKeyframe
 import com.panframe.camera.model.PanSessionSidecar
 import com.panframe.camera.model.PanSmoother
 import kotlinx.coroutines.*
@@ -46,14 +45,17 @@ class PanExportService : Service() {
     override fun onBind(intent: Intent?): IBinder? = null
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
-        startForegroundSafe("Preparing dual-video export...")
+        startForegroundSafe("Saving cropped box video...")
         val sidecarPath = intent?.getStringExtra(EXTRA_SIDECAR_PATH)
         if (!sidecarPath.isNullOrBlank()) {
             queue.add(sidecarPath)
             updateState()
         }
         if (intent?.action == ACTION_RESUME_QUEUE) isCameraBusy = false
-        processNextIfIdle()
+        scope.launch {
+            delay(600L)
+            processNextIfIdle()
+        }
         return START_NOT_STICKY
     }
 
@@ -65,27 +67,35 @@ class PanExportService : Service() {
             stopSelf()
             return
         }
-        val sidecarFile = File(nextPath)
         val sidecar = runCatching {
-            Json.decodeFromString<PanSessionSidecar>(sidecarFile.readText())
+            Json.decodeFromString<PanSessionSidecar>(File(nextPath).readText())
         }.getOrNull() ?: run { processNextIfIdle(); return }
 
         updateState(exporting = true)
-        startForegroundSafe("Rendering reframed HD video...")
+        startForegroundSafe("Rendering Shorts/Box video...")
+
+        val retriever = MediaMetadataRetriever()
+        var fixDeg = 0f
+        runCatching {
+            retriever.setDataSource(sidecar.rawVideoPath)
+            val w = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_VIDEO_WIDTH)?.toIntOrNull() ?: 0
+            val h = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_VIDEO_HEIGHT)?.toIntOrNull() ?: 0
+            val rot = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_VIDEO_ROTATION)?.toIntOrNull() ?: 0
+            val upW = if (rot == 90 || rot == 270) h else w
+            val upH = if (rot == 90 || rot == 270) w else h
+            if (sidecar.isLandscapeCapture && upH > upW) fixDeg = 90f
+        }
+        runCatching { retriever.release() }
 
         val smoothed = PanSmoother.smoothKeyframes(sidecar.keyframes)
-        val outW = if (sidecar.isLandscapeCapture) 1080 else 1920
-        val outH = if (sidecar.isLandscapeCapture) 1920 else 1080
         val tempOut = File(cacheDir, "pan_crop_${System.currentTimeMillis()}.mp4")
-        
+        val effects = LivePanEffects.buildEffects(sidecar.isLandscapeCapture, fixDeg, smoothed)
 
-        val editedItem = EditedMediaItem.Builder(MediaItem.fromUri(File(sidecar.rawVideoPath).toURI().toString()))
-            .setEffects(Effects(emptyList(), LivePanEffects.buildEffects(sidecar.isLandscapeCapture, smoothed)))
+        val editedItem = EditedMediaItem.Builder(MediaItem.fromUri(Uri.fromFile(File(sidecar.rawVideoPath))))
+            .setEffects(Effects(emptyList(), effects))
             .build()
 
-        val encoderFactory = DefaultEncoderFactory.Builder(this)
-            .setRequestedVideoEncoderSettings(VideoEncoderSettings.Builder().setBitrate(14_000_000).build())
-            .build()
+        val encoderFactory = DefaultEncoderFactory.Builder(this).setEnableFallback(true).build()
 
         val transformer = Transformer.Builder(this)
             .setVideoMimeType(MimeTypes.VIDEO_H264)
@@ -94,17 +104,22 @@ class PanExportService : Service() {
                 override fun onCompleted(composition: Composition, exportResult: ExportResult) {
                     activeTransformer = null
                     scope.launch(Dispatchers.IO) {
-                        val suffix = if (sidecar.isLandscapeCapture) "9x16_Reels" else "16x9_YouTube"
+                        val suffix = if (sidecar.isLandscapeCapture) "9x16_ShortsBox" else "16x9_YouTubeBox"
                         val saved = saveToMovies(tempOut, suffix)
                         tempOut.delete()
-                        _status.value = _status.value.copy(lastFinishedName = saved, lastError = null)
-                        withContext(Dispatchers.Main) { processNextIfIdle() }
+                        withContext(Dispatchers.Main) {
+                            Toast.makeText(this@PanExportService, "Saved Box Video: $saved", Toast.LENGTH_LONG).show()
+                            _status.value = _status.value.copy(lastFinishedName = saved, lastError = null)
+                            processNextIfIdle()
+                        }
                     }
                 }
                 override fun onError(c: Composition, r: ExportResult, e: ExportException) {
                     activeTransformer = null
                     tempOut.delete()
-                    _status.value = _status.value.copy(lastError = e.localizedMessage ?: "Export error")
+                    val msg = e.localizedMessage ?: "Codec error"
+                    Toast.makeText(this@PanExportService, "Box Export Error: $msg", Toast.LENGTH_LONG).show()
+                    _status.value = _status.value.copy(lastError = msg)
                     processNextIfIdle()
                 }
             }).build()
@@ -130,14 +145,13 @@ class PanExportService : Service() {
             values.put(MediaStore.Video.Media.IS_PENDING, 0)
             contentResolver.update(uri, values, null, null)
         }
+        val pubPath = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_MOVIES).absolutePath + "/PanFrame/$fileName"
+        MediaScannerConnection.scanFile(this, arrayOf(pubPath), arrayOf("video/mp4"), null)
         return fileName
     }
 
     private fun updateState(exporting: Boolean = activeTransformer != null) {
-        _status.value = _status.value.copy(
-            pendingCount = queue.size + (if (exporting) 1 else 0),
-            isExporting = exporting
-        )
+        _status.value = _status.value.copy(pendingCount = queue.size + (if (exporting) 1 else 0), isExporting = exporting)
     }
 
     private fun startForegroundSafe(text: String) {
@@ -179,32 +193,6 @@ class PanExportService : Service() {
             if (!busy && queue.isNotEmpty()) {
                 val i = Intent(context, PanExportService::class.java).setAction(ACTION_RESUME_QUEUE)
                 androidx.core.content.ContextCompat.startForegroundService(context, i)
-            }
-        }
-    }
-}
-
-@OptIn(UnstableApi::class)
-class LivePanCropEffect(
-    private val isLandscapeCapture: Boolean,
-    private val outWidth: Int,
-    private val outHeight: Int,
-    private val keyframes: List<BoxKeyframe>
-) : MatrixTransformation {
-    private val ratio = 81f / 256f
-    private val halfSpan = ratio / 2f
-    override fun configure(inputWidth: Int, inputHeight: Int): Size = Size(outWidth, outHeight)
-    override fun getMatrix(presentationTimeUs: Long): Matrix {
-        val (rawX, rawY) = PanSmoother.sampleAt(keyframes, presentationTimeUs)
-        return Matrix().apply {
-            if (isLandscapeCapture) {
-                val cx = rawX.coerceIn(halfSpan, 1f - halfSpan)
-                postScale(1f / ratio, 1f)
-                postTranslate((0.5f - cx) * 2f * (1f / ratio), 0f)
-            } else {
-                val cy = rawY.coerceIn(halfSpan, 1f - halfSpan)
-                postScale(1f, 1f / ratio)
-                postTranslate(0f, (cy - 0.5f) * 2f * (1f / ratio))
             }
         }
     }

@@ -98,6 +98,7 @@ fun PanFrameApp() {
 
     var isLandscapePhone by remember { mutableStateOf(false) }
     var phoneSurfaceRotation by remember { mutableStateOf(Surface.ROTATION_0) }
+    var phoneSurfaceRotation by remember { mutableStateOf(Surface.ROTATION_0) }
     var isRecording by remember { mutableStateOf(false) }
     var lockedLandscape by remember { mutableStateOf(false) }
     var recSeconds by remember { mutableStateOf(0L) }
@@ -150,7 +151,7 @@ fun PanFrameApp() {
 
         provider.unbindAll()
         val groupBuilder = UseCaseGroup.Builder().addUseCase(preview).addUseCase(vidCap)
-        previewView.viewPort?.let { groupBuilder.setViewPort(it) }
+        
         val cam = provider.bindToLifecycle(lifecycleOwner, selector, groupBuilder.build())
         activeCamera = cam
         videoCapture = vidCap
