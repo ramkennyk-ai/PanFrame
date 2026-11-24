@@ -14,6 +14,7 @@ import android.hardware.camera2.CaptureRequest
 import android.os.Build
 import android.os.Bundle
 import android.os.Environment
+import android.os.SystemClock
 import android.provider.MediaStore
 import android.util.Rational
 import android.view.WindowManager
@@ -73,6 +74,8 @@ import com.panframe.camera.model.PanSessionSidecar
 import com.panframe.camera.ui.PanDottedOverlay
 import com.panframe.camera.ui.RePanScreen
 import com.panframe.camera.ui.theme.*
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import java.io.File
 import android.view.Surface as ViewSurface
@@ -86,6 +89,21 @@ class MainActivity : ComponentActivity() {
                 PanFrameApp()
             }
         }
+    }
+}
+
+/** Media-time clock: anchored to CameraX's recorded duration, interpolated by wall clock in between. */
+private class RecClock {
+    @Volatile private var anchorUs = 0L
+    @Volatile private var anchorWallUs = 0L
+    private var lastUs = 0L
+    private fun wallUs() = SystemClock.elapsedRealtimeNanos() / 1000L
+    fun reset() { lastUs = 0L }
+    fun anchor(mediaUs: Long) { anchorUs = mediaUs; anchorWallUs = wallUs() }
+    fun nowUs(): Long {
+        val v = anchorUs + (wallUs() - anchorWallUs)
+        lastUs = maxOf(lastUs, v)
+        return lastUs
     }
 }
 
@@ -144,12 +162,20 @@ fun PanFrameApp() {
     val animX = remember { Animatable(0.5f) }
     val animY = remember { Animatable(0.5f) }
     val keyframes = remember { mutableStateListOf<BoxKeyframe>() }
+    val recClock = remember { RecClock() }
     val previewView = remember { PreviewView(context).apply { scaleType = PreviewView.ScaleType.FILL_CENTER } }
 
     // (Re)bind camera whenever the phone changes between portrait and landscape.
-    LaunchedEffect(hasPermissions, isLandscape) {
+    // Also keyed on showRePan: the camera is released while the Re-Pan player is on screen.
+    LaunchedEffect(hasPermissions, isLandscape, showRePan) {
         if (!hasPermissions) return@LaunchedEffect
         val provider = ProcessCameraProvider.getInstance(context).await()
+        if (showRePan) {
+            provider.unbindAll()
+            activeCamera = null
+            videoCapture = null
+            return@LaunchedEffect
+        }
         val selector = CameraSelector.DEFAULT_BACK_CAMERA
         val camInfo = selector.filter(provider.availableCameraInfos).firstOrNull()
         is4KSupported = camInfo?.let {
@@ -203,6 +229,24 @@ fun PanFrameApp() {
         currentZoom = 1.0f
     }
 
+    // Box path sampled every 33 ms while recording (independent of how often CameraX emits Status events).
+    LaunchedEffect(isRecording) {
+        if (isRecording) {
+            while (isActive) {
+                keyframes.add(BoxKeyframe(recClock.nowUs(), animX.value, animY.value))
+                delay(33L)
+            }
+        }
+    }
+
+    // Re-center the box when the phone flips between portrait and landscape.
+    LaunchedEffect(isLandscape) {
+        if (!isRecording) {
+            animX.snapTo(0.5f)
+            animY.snapTo(0.5f)
+        }
+    }
+
     val effectiveLandscape = if (isRecording) lockedLandscape else isLandscape
 
     val currentSidecar = lastSidecar
@@ -246,11 +290,15 @@ fun PanFrameApp() {
             .withAudioEnabled()
             .start(ContextCompat.getMainExecutor(context)) { event ->
                 when (event) {
-                    is VideoRecordEvent.Start -> isRecording = true
+                    is VideoRecordEvent.Start -> {
+                        recClock.reset()
+                        recClock.anchor(0L)
+                        isRecording = true
+                    }
                     is VideoRecordEvent.Status -> {
                         val us = event.recordingStats.recordedDurationNanos / 1000L
                         recSeconds = us / 1_000_000L
-                        keyframes.add(BoxKeyframe(us, animX.value, animY.value))
+                        recClock.anchor(us)
                     }
                     is VideoRecordEvent.Finalize -> {
                         isRecording = false

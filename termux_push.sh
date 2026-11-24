@@ -13,7 +13,6 @@ if [ -z "$GH_TOKEN" ] && command -v gh >/dev/null && gh auth status >/dev/null 2
 fi
 [ -n "$GH_TOKEN" ] || { read -rsp "GitHub token (hidden): " GH_TOKEN; echo; }
 
-# Username comes from the token itself
 GH_USER=$(curl -s -H "Authorization: Bearer $GH_TOKEN" https://api.github.com/user \
   | grep -o '"login": *"[^"]*"' | head -1 | cut -d'"' -f4)
 [ -n "$GH_USER" ] || { echo "Token rejected. Check it and its scopes."; exit 1; }
@@ -40,7 +39,7 @@ if git fetch -q "$AUTH" main:refs/remotes/origin/main 2>/dev/null; then
 fi
 
 git add -A
-git commit -q -m "PanFrame v2: landscape UI, viewport sync, 4K export, re-pan flow" || echo "Nothing new to commit"
+git commit -q -m "${COMMIT_MSG:-PanFrame v3: 33ms pan sampling, camera off in re-pan, pause export while recording}" || echo "Nothing new to commit"
 git push "$AUTH" main
 git remote get-url origin >/dev/null 2>&1 || git remote add origin "https://github.com/${GH_USER}/${REPO}.git"
 

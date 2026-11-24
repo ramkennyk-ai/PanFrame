@@ -13,6 +13,7 @@ import com.panframe.camera.model.PanSmoother
 object LivePanEffects {
     private const val RATIO = 81f / 256f
     private const val HALF = RATIO / 2f
+    private const val EDGE_GAP = 0.002f   // keep the crop window off the exact texture edge
 
     /** true = export the crop at native size (~1214x2160 / 2160x1214 from 4K): slower, bigger files. */
     private val NATIVE_CROP_OUTPUT = false
@@ -41,10 +42,10 @@ object LivePanEffects {
                 val (rawX, rawY) = PanSmoother.sampleAt(keyframes, presentationTimeUs)
                 return Matrix().apply {
                     if (isLandscapeCapture) {
-                        val cx = rawX.coerceIn(HALF, 1f - HALF)
+                        val cx = rawX.coerceIn(HALF + EDGE_GAP, 1f - HALF - EDGE_GAP)
                         postTranslate((0.5f - cx) * 2f, 0f)
                     } else {
-                        val cy = rawY.coerceIn(HALF, 1f - HALF)
+                        val cy = rawY.coerceIn(HALF + EDGE_GAP, 1f - HALF - EDGE_GAP)
                         postTranslate(0f, (cy - 0.5f) * 2f)
                     }
                 }

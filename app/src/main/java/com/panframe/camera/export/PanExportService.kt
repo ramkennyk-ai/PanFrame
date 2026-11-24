@@ -42,10 +42,17 @@ class PanExportService : Service() {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
     private var activeTransformer: Transformer? = null
     private var working = false
+    private var currentTemp: File? = null
+    private var jobSeq = 0
 
     private class ExportJob(val path: String, val sidecar: PanSessionSidecar, val upW: Int, val upH: Int)
 
     override fun onBind(intent: Intent?): IBinder? = null
+
+    override fun onCreate() {
+        super.onCreate()
+        instance = this
+    }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         startForegroundSafe("Preparing cropped video...")
@@ -80,6 +87,7 @@ class PanExportService : Service() {
 
     private fun finishCurrent() {
         activeTransformer = null
+        currentTemp = null
         working = false
         current = null
         updateState()
@@ -114,7 +122,34 @@ class PanExportService : Service() {
         return ExportJob(path, sidecar, w, h)
     }
 
+    /** Called when the user hits Record: stop rendering, put the clip back in the queue. */
+    private fun pauseForRecording() {
+        val t = activeTransformer
+        val path = current
+        jobSeq++                       // invalidates callbacks of the cancelled export
+        if (t != null && path != null) {
+            runCatching { t.cancel() }
+            activeTransformer = null
+            val tmp = currentTemp
+            currentTemp = null
+            scope.launch(Dispatchers.IO) { tmp?.delete() }
+            if (!queue.contains(path)) queue.add(path)
+            working = false
+            current = null
+            updateState()
+            startForegroundSafe("Paused while recording...")
+        }
+    }
+
     private fun startTransform(job: ExportJob) {
+        if (isCameraBusy) {            // recording started while the sidecar was loading
+            if (!queue.contains(job.path)) queue.add(job.path)
+            working = false
+            current = null
+            updateState()
+            return
+        }
+        val myId = ++jobSeq
         val sidecar = job.sidecar
         val smoothed = PanSmoother.smoothKeyframes(sidecar.keyframes)
         val out = LivePanEffects.outputSize(sidecar.isLandscapeCapture, job.upW, job.upH)
@@ -137,6 +172,7 @@ class PanExportService : Service() {
             .setEncoderFactory(encoderFactory)
             .addListener(object : Transformer.Listener {
                 override fun onCompleted(composition: Composition, exportResult: ExportResult) {
+                    if (myId != jobSeq) return
                     scope.launch {
                         val result = withContext(Dispatchers.IO) {
                             val r = runCatching { saveToMovies(tempOut, sidecar) }
@@ -156,6 +192,7 @@ class PanExportService : Service() {
                 }
 
                 override fun onError(composition: Composition, exportResult: ExportResult, exportException: ExportException) {
+                    if (myId != jobSeq) return
                     val msg = exportException.localizedMessage ?: "Codec error"
                     tempOut.delete()
                     markFinished(job.path, sidecar.revision, failed = true)
@@ -166,6 +203,7 @@ class PanExportService : Service() {
             }).build()
 
         activeTransformer = transformer
+        currentTemp = tempOut
         transformer.start(editedItem, tempOut.absolutePath)
     }
 
@@ -233,6 +271,7 @@ class PanExportService : Service() {
     }
 
     override fun onDestroy() {
+        if (instance === this) instance = null
         activeTransformer?.cancel()
         scope.cancel()
         super.onDestroy()
@@ -243,6 +282,7 @@ class PanExportService : Service() {
         private val queue = ConcurrentLinkedQueue<String>()
         @Volatile private var isCameraBusy = false
         @Volatile private var current: String? = null
+        @Volatile private var instance: PanExportService? = null
         private val _status = MutableStateFlow(ExportUiStatus())
         val status = _status.asStateFlow()
 
@@ -258,6 +298,7 @@ class PanExportService : Service() {
 
         fun setCameraBusy(context: Context, busy: Boolean) {
             isCameraBusy = busy
+            if (busy) instance?.let { svc -> svc.scope.launch { svc.pauseForRecording() } }
             if (!busy && queue.isNotEmpty()) start(context, ACTION_RESUME_QUEUE)
         }
 
