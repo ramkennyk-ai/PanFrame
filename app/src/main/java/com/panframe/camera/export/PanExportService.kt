@@ -77,10 +77,10 @@ class PanExportService : Service() {
         val outW = if (sidecar.isLandscapeCapture) 1080 else 1920
         val outH = if (sidecar.isLandscapeCapture) 1920 else 1080
         val tempOut = File(cacheDir, "pan_crop_${System.currentTimeMillis()}.mp4")
-        val cropEffect = LivePanCropEffect(sidecar.isLandscapeCapture, outW, outH, smoothed)
+        
 
         val editedItem = EditedMediaItem.Builder(MediaItem.fromUri(File(sidecar.rawVideoPath).toURI().toString()))
-            .setEffects(Effects(emptyList(), listOf<Effect>(cropEffect)))
+            .setEffects(Effects(emptyList(), LivePanEffects.buildEffects(sidecar.isLandscapeCapture, smoothed)))
             .build()
 
         val encoderFactory = DefaultEncoderFactory.Builder(this)

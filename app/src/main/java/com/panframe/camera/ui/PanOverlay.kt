@@ -30,54 +30,39 @@ fun PanDottedOverlay(
             .fillMaxSize()
             .pointerInput(isLandscapeMode) {
                 detectTapGestures { offset ->
-                    val nx = (offset.x / size.width).coerceIn(halfSpan, 1f - halfSpan)
-                    val ny = (offset.y / size.height).coerceIn(halfSpan, 1f - halfSpan)
-                    onTargetSelected(nx, ny, true)
+                    val pos = (offset.y / size.height).coerceIn(halfSpan, 1f - halfSpan)
+                    if (isLandscapeMode) onTargetSelected(pos, 0.5f, true)
+                    else onTargetSelected(0.5f, pos, true)
                 }
             }
             .pointerInput(isLandscapeMode) {
                 detectDragGestures { change, dragAmount ->
                     change.consume()
                     val (cx, cy) = centerProvider()
-                    val nx = (cx + dragAmount.x / size.width).coerceIn(halfSpan, 1f - halfSpan)
-                    val ny = (cy + dragAmount.y / size.height).coerceIn(halfSpan, 1f - halfSpan)
-                    onTargetSelected(nx, ny, false)
+                    val cur = if (isLandscapeMode) cx else cy
+                    val next = (cur + dragAmount.y / size.height).coerceIn(halfSpan, 1f - halfSpan)
+                    if (isLandscapeMode) onTargetSelected(next, 0.5f, false)
+                    else onTargetSelected(0.5f, next, false)
                 }
             }
     ) {
         val (cx, cy) = centerProvider()
-        val boxW = if (isLandscapeMode) size.width * ratio else size.width
-        val boxH = if (isLandscapeMode) size.height else size.height * ratio
-        val left = if (isLandscapeMode) (cx * size.width - boxW / 2f).coerceIn(0f, size.width - boxW) else 0f
-        val top = if (isLandscapeMode) 0f else (cy * size.height - boxH / 2f).coerceIn(0f, size.height - boxH)
+        val activeNorm = if (isLandscapeMode) cx else cy
+        val boxW = size.width
+        val boxH = size.height * ratio
+        val top = (activeNorm * size.height - boxH / 2f).coerceIn(0f, size.height - boxH)
 
-        // Dimmed outer letterbox masks
         val scrim = Color(0x88000000)
-        if (isLandscapeMode) {
-            drawRect(scrim, Offset.Zero, Size(left, size.height))
-            drawRect(scrim, Offset(left + boxW, 0f), Size(size.width - (left + boxW), size.height))
-        } else {
-            drawRect(scrim, Offset.Zero, Size(size.width, top))
-            drawRect(scrim, Offset(0f, top + boxH), Size(size.width, size.height - (top + boxH)))
-        }
+        drawRect(scrim, Offset.Zero, Size(size.width, top))
+        drawRect(scrim, Offset(0f, top + boxH), Size(size.width, size.height - (top + boxH)))
 
-        // Glowing dashed cinema crop box
         drawRoundRect(
             color = CinemaAmber,
-            topLeft = Offset(left + 3f, top + 3f),
-            size = Size(boxW - 6f, boxH - 6f),
+            topLeft = Offset(4f, top + 3f),
+            size = Size(boxW - 8f, boxH - 6f),
             cornerRadius = CornerRadius(18f, 18f),
-            style = Stroke(
-                width = 5f,
-                pathEffect = PathEffect.dashPathEffect(floatArrayOf(22f, 14f), 0f)
-            )
+            style = Stroke(width = 5f, pathEffect = PathEffect.dashPathEffect(floatArrayOf(22f, 14f), 0f))
         )
-
-        // Center crosshair dot
-        drawCircle(
-            color = CinemaAmber.copy(alpha = 0.85f),
-            radius = 7f,
-            center = Offset(left + boxW / 2f, top + boxH / 2f)
-        )
+        drawCircle(CinemaAmber.copy(alpha = 0.85f), 7f, Offset(boxW / 2f, top + boxH / 2f))
     }
 }

@@ -97,6 +97,7 @@ fun PanFrameApp() {
     }
 
     var isLandscapePhone by remember { mutableStateOf(false) }
+    var phoneSurfaceRotation by remember { mutableStateOf(Surface.ROTATION_0) }
     var isRecording by remember { mutableStateOf(false) }
     var lockedLandscape by remember { mutableStateOf(false) }
     var recSeconds by remember { mutableStateOf(0L) }
@@ -118,7 +119,11 @@ fun PanFrameApp() {
         val listener = object : OrientationEventListener(context) {
             override fun onOrientationChanged(orientation: Int) {
                 if (orientation == ORIENTATION_UNKNOWN || isRecording) return
-                isLandscapePhone = (orientation in 60..120) || (orientation in 240..300)
+                when {
+                    orientation in 240..300 -> { isLandscapePhone = true; phoneSurfaceRotation = Surface.ROTATION_90 }
+                    orientation in 60..120 -> { isLandscapePhone = true; phoneSurfaceRotation = Surface.ROTATION_270 }
+                    orientation in 330..360 || orientation in 0..30 -> { isLandscapePhone = false; phoneSurfaceRotation = Surface.ROTATION_0 }
+                }
             }
         }
         listener.enable()
@@ -207,7 +212,7 @@ fun PanFrameApp() {
         ) {
             Surface(color = CinemaSurface, shape = RoundedCornerShape(16.dp)) {
                 Text(
-                    text = if (is4KSupported) "4K DUAL-HD" else "1080p SMART-HD",
+                    text = if (is4KSupported) if (effectiveLandscape) "4K WIDE + SHORTS BOX" else "4K SHORTS + YOUTUBE BOX" else if (effectiveLandscape) "WIDE 16:9 + SHORTS BOX" else "SHORTS 9:16 + YOUTUBE BOX",
                     color = CinemaAmber,
                     fontSize = 12.sp,
                     fontWeight = FontWeight.Bold,
@@ -258,14 +263,15 @@ fun PanFrameApp() {
             modifier = Modifier.align(Alignment.BottomCenter).padding(bottom = 32.dp),
             horizontalAlignment = Alignment.CenterHorizontally
         ) {
-            if (effectiveLandscape) {
-                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    FilledTonalButton(onClick = { scope.launch { animX.animateTo(0.22f, tween(420)) } }) { Text("◀ Left") }
-                    FilledTonalButton(onClick = { scope.launch { animX.animateTo(0.50f, tween(420)) } }) { Text("Center") }
-                    FilledTonalButton(onClick = { scope.launch { animX.animateTo(0.78f, tween(420)) } }) { Text("Right ▶") }
-                }
-                Spacer(Modifier.height(14.dp))
+            Surface(color = CinemaSurface, shape = RoundedCornerShape(12.dp)) {
+                Text(
+                    text = "Drag yellow box to follow subject",
+                    color = Color.White.copy(alpha = 0.85f),
+                    fontSize = 12.sp,
+                    modifier = Modifier.padding(horizontal = 12.dp, vertical = 5.dp)
+                )
             }
+            Spacer(Modifier.height(12.dp))
 
             Row(
                 verticalAlignment = Alignment.CenterVertically,
@@ -291,7 +297,7 @@ fun PanFrameApp() {
                                 val vc = videoCapture ?: return@clickable
                                 PanExportService.setCameraBusy(context, true)
                                 lockedLandscape = isLandscapePhone
-                                vc.targetRotation = if (lockedLandscape) Surface.ROTATION_90 else Surface.ROTATION_0
+                                vc.targetRotation = if (lockedLandscape) phoneSurfaceRotation else Surface.ROTATION_0
                                 keyframes.clear()
                                 recSeconds = 0L
 
@@ -310,7 +316,8 @@ fun PanFrameApp() {
                                             is VideoRecordEvent.Status -> {
                                                 val us = event.recordingStats.recordedDurationNanos / 1000L
                                                 recSeconds = us / 1_000_000L
-                                                keyframes.add(BoxKeyframe(us, animX.value, animY.value))
+                                                val adjX = if (vc.targetRotation == Surface.ROTATION_270) (1f - animX.value) else animX.value
+                                                keyframes.add(BoxKeyframe(us, adjX, animY.value))
                                             }
                                             is VideoRecordEvent.Finalize -> {
                                                 isRecording = false

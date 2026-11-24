@@ -113,14 +113,7 @@ fun RePanScreen(
             modifier = Modifier.align(Alignment.BottomCenter).padding(20.dp),
             horizontalAlignment = Alignment.CenterHorizontally
         ) {
-            if (sidecar.isLandscapeCapture) {
-                Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                    FilledTonalButton(onClick = { scope.launch { animX.animateTo(0.22f, tween(420)) } }) { Text("◀ Speaker A") }
-                    FilledTonalButton(onClick = { scope.launch { animX.animateTo(0.50f, tween(420)) } }) { Text("Center") }
-                    FilledTonalButton(onClick = { scope.launch { animX.animateTo(0.78f, tween(420)) } }) { Text("Speaker B ▶") }
-                }
-                Spacer(Modifier.height(12.dp))
-            }
+
             Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
                 OutlinedButton(onClick = onCancel) { Text("Keep Original") }
                 Button(
