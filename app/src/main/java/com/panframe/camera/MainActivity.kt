@@ -278,7 +278,6 @@ fun PanFrameApp() {
                 }
 
                 Box(
-                    contentAlignment = Alignment.Center,
                     modifier = Modifier
                         .size(78.dp)
                         .border(4.dp, Color.White, CircleShape)
