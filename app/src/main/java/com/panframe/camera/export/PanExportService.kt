@@ -1,3 +1,117 @@
+package com.panframe.camera.export
+
+import android.app.NotificationChannel
+import android.app.NotificationManager
+import android.app.Service
+import android.content.ContentValues
+import android.content.Context
+import android.content.Intent
+import android.content.pm.ServiceInfo
+import android.graphics.Matrix
+import android.os.Build
+import android.os.Environment
+import android.os.IBinder
+import android.provider.MediaStore
+import androidx.annotation.OptIn
+import androidx.core.app.NotificationCompat
+import androidx.media3.common.Effect
+import androidx.media3.common.MediaItem
+import androidx.media3.common.MimeTypes
+import androidx.media3.common.util.Size
+import androidx.media3.common.util.UnstableApi
+import androidx.media3.effect.MatrixTransformation
+import androidx.media3.transformer.*
+import com.panframe.camera.model.BoxKeyframe
+import com.panframe.camera.model.PanSessionSidecar
+import com.panframe.camera.model.PanSmoother
+import kotlinx.coroutines.*
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.serialization.json.Json
+import java.io.File
+import java.util.concurrent.ConcurrentLinkedQueue
+
+data class ExportUiStatus(
+    val pendingCount: Int = 0,
+    val isExporting: Boolean = false,
+    val lastFinishedName: String? = null,
+    val lastError: String? = null
+)
+
+@OptIn(UnstableApi::class)
+class PanExportService : Service() {
+    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
+    private var activeTransformer: Transformer? = null
+
+    override fun onBind(intent: Intent?): IBinder? = null
+
+    override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        startForegroundSafe("Preparing dual-video export...")
+        val sidecarPath = intent?.getStringExtra(EXTRA_SIDECAR_PATH)
+        if (!sidecarPath.isNullOrBlank()) {
+            queue.add(sidecarPath)
+            updateState()
+        }
+        if (intent?.action == ACTION_RESUME_QUEUE) isCameraBusy = false
+        processNextIfIdle()
+        return START_NOT_STICKY
+    }
+
+    private fun processNextIfIdle() {
+        if (activeTransformer != null || isCameraBusy) return
+        val nextPath = queue.poll() ?: run {
+            updateState(exporting = false)
+            stopForeground(STOP_FOREGROUND_REMOVE)
+            stopSelf()
+            return
+        }
+        val sidecarFile = File(nextPath)
+        val sidecar = runCatching {
+            Json.decodeFromString<PanSessionSidecar>(sidecarFile.readText())
+        }.getOrNull() ?: run { processNextIfIdle(); return }
+
+        updateState(exporting = true)
+        startForegroundSafe("Rendering reframed HD video...")
+
+        val smoothed = PanSmoother.smoothKeyframes(sidecar.keyframes)
+        val outW = if (sidecar.isLandscapeCapture) 1080 else 1920
+        val outH = if (sidecar.isLandscapeCapture) 1920 else 1080
+        val tempOut = File(cacheDir, "pan_crop_${System.currentTimeMillis()}.mp4")
+        val cropEffect = LivePanCropEffect(sidecar.isLandscapeCapture, outW, outH, smoothed)
+
+        val editedItem = EditedMediaItem.Builder(MediaItem.fromUri(File(sidecar.rawVideoPath).toURI().toString()))
+            .setEffects(Effects(emptyList(), listOf<Effect>(cropEffect)))
+            .build()
+
+        val encoderFactory = DefaultEncoderFactory.Builder(this)
+            .setRequestedVideoEncoderSettings(VideoEncoderSettings.Builder().setBitrate(14_000_000).build())
+            .build()
+
+        val transformer = Transformer.Builder(this)
+            .setVideoMimeType(MimeTypes.VIDEO_H264)
+            .setEncoderFactory(encoderFactory)
+            .addListener(object : Transformer.Listener {
+                override fun onCompleted(composition: Composition, exportResult: ExportResult) {
+                    activeTransformer = null
+                    scope.launch(Dispatchers.IO) {
+                        val suffix = if (sidecar.isLandscapeCapture) "9x16_Reels" else "16x9_YouTube"
+                        val saved = saveToMovies(tempOut, suffix)
+                        tempOut.delete()
+                        _status.value = _status.value.copy(lastFinishedName = saved, lastError = null)
+                        withContext(Dispatchers.Main) { processNextIfIdle() }
+                    }
+                }
+                override fun onError(c: Composition, r: ExportResult, e: ExportException) {
+                    activeTransformer = null
+                    tempOut.delete()
+                    _status.value = _status.value.copy(lastError = e.localizedMessage ?: "Export error")
+                    processNextIfIdle()
+                }
+            }).build()
+
+        activeTransformer = transformer
+        transformer.start(editedItem, tempOut.absolutePath)
+    }
 
     private fun saveToMovies(source: File, suffix: String): String {
         val fileName = "PanFrame_${System.currentTimeMillis()}_$suffix.mp4"
